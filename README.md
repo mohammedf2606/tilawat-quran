@@ -22,16 +22,24 @@ so it misses some mistakes but rarely flags correct recitation. When you start f
 a surah page, the app holds the engine to that surah from the ayah on screen. From
 the home screen, it locks onto the first surah it recognises.
 
-## Install on your phone
+## Install on your phone (with automatic updates)
 
-Every push to `main` builds an APK in GitHub Actions.
+Every push to `main` builds a signed APK and publishes it as the latest GitHub
+Release. [Obtainium](https://github.com/ImranR98/Obtainium) watches that release
+and updates the app for you.
 
-1. Open the latest **Build APK** run under the repo's *Actions* tab and download the
-   `tilawat-apk` artifact (or `gh run download -n tilawat-apk`).
-2. Copy the `.apk` to your phone, open it, and allow installs from that source.
+1. Install Obtainium from its GitHub releases or F-Droid.
+2. Because this repo is private, create a fine-grained GitHub token with read-only
+   **Contents** access to `tilawat-quran`. In Obtainium, go to Settings → GitHub and
+   paste it in.
+3. In Obtainium, add the app `https://github.com/mohammedf2606/tilawat-quran` and install it.
+4. On Android 12 and later, turn on background updates in Obtainium so new builds
+   install without a prompt. Otherwise you get a notification and tap to update.
 
-Pushing a `v*` tag (e.g. `git tag v0.1.0 && git push --tags`) also attaches the APK
-to a GitHub Release.
+Every build is signed with the same key (repo secrets `ANDROID_KEYSTORE_B64` and
+`ANDROID_KEYSTORE_PASSWORD`), so each APK installs over the previous one. Keep
+the key safe: if it's lost, the app must be uninstalled before a build signed with
+a new key can be installed.
 
 ## How it's built
 

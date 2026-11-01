@@ -13,8 +13,9 @@ Tap the mode pill above the mic to choose:
 - **Live correction**: pauses at a possible mistake (missed or wrong word, harakah
   slip, repeated word, skipped ayah) so you can retry the ayah, dismiss it, or save
   it for later.
-- **Review after**: lets you recite uninterrupted, then lists possible mistakes
-  when you stop.
+- **Review after**: a memorisation test. The text is covered while you recite
+  from memory, showing only the surah and the last ayah you've reached. When you
+  stop, the text is revealed along with a list of possible mistakes.
 
 Both correction modes use Tilawa's correction engine. It flags only clear cases,
 so it misses some mistakes but rarely flags correct recitation. When you start from

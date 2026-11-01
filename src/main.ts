@@ -55,6 +55,7 @@ const $mode = document.getElementById("mode") as HTMLButtonElement;
 const $modes = document.getElementById("modes")!;
 const $correction = document.getElementById("correction")!;
 const $review = document.getElementById("review")!;
+const $blind = document.getElementById("blind")!;
 
 let quran: QuranData;
 
@@ -270,6 +271,7 @@ const recognizer = new Recognizer((e: RecognizerEvent) => {
       setStatus("Model ready", "idle");
       break;
     case "listening":
+      showBlind(e.active && settings.mode === "review");
       $mic.classList.toggle("on", e.active);
       $mic.setAttribute("aria-pressed", String(e.active));
       setStatus(e.active ? "Listening… start reciting" : "", e.active ? "live" : "idle");
@@ -280,6 +282,7 @@ const recognizer = new Recognizer((e: RecognizerEvent) => {
     case "verse_match": {
       const s = quran.surahs[e.surah - 1];
       setStatus(`${s.transliteration} ${e.surah}:${e.ayah}`, "live");
+      updateBlind(e.surah, e.ayah);
       followRecitation(e.surah, e.ayah, recitePos?.surah === e.surah && recitePos.ayah === e.ayah ? recitePos.matched : []);
       break;
     }
@@ -329,7 +332,7 @@ $mic.addEventListener("click", async () => {
 const MODES: { id: ReciteMode; label: string; desc: string }[] = [
   { id: "follow", label: "Follow along", desc: "Find your place and highlight words as you recite." },
   { id: "live", label: "Live correction", desc: "Stop me at a possible mistake so I can retry the ayah." },
-  { id: "review", label: "Review after", desc: "Recite uninterrupted, then list possible mistakes when I stop." },
+  { id: "review", label: "Review after", desc: "Memorisation test: the text stays hidden while I recite, then possible mistakes are listed when I stop." },
 ];
 
 function renderModeButton(): void {
@@ -480,6 +483,36 @@ function onCorrection(state: CorrectionState): void {
     h("div", { class: "actions" }, ...actions),
   );
   $correction.hidden = false;
+}
+
+// ---------------------------------------------------------------------------
+// Blind recitation (Review after): cover the text so it's recited from memory.
+// Only what has already been recited is shown: the surah and the last ayah reached.
+// ---------------------------------------------------------------------------
+const blindHeard = new Set<string>();
+
+function showBlind(on: boolean): void {
+  blindHeard.clear();
+  document.body.classList.toggle("blind", on);
+  $blind.hidden = !on;
+  if (on) {
+    $blind.replaceChildren(
+      h("h2", {}, "Reciting from memory"),
+      h("p", { class: "blind-where" }, "Start reciting. The text stays hidden until you stop."),
+    );
+  }
+}
+
+function updateBlind(surah: number, ayah: number): void {
+  if ($blind.hidden) return;
+  blindHeard.add(`${surah}:${ayah}`);
+  const s = quran.surahs[surah - 1];
+  $blind.replaceChildren(
+    h("h2", {}, "Reciting from memory"),
+    h("div", { class: "ar blind-surah", lang: "ar" }, s.name),
+    h("p", { class: "blind-where" }, `${s.transliteration} · reached ayah ${ayah} of ${s.totalVerses}`),
+    h("p", { class: "fine" }, `${blindHeard.size} ayah${blindHeard.size > 1 ? "s" : ""} recited. Tap stop to reveal the text and your review.`),
+  );
 }
 
 function showReview(): void {

@@ -414,3 +414,45 @@ a.icon {
 .issues b {
   display: block;
 }
+
+/* Blind recitation -------------------------------------------------------- */
+#blind {
+  position: fixed;
+  inset: 0;
+  z-index: 9;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 24px 24px 140px;
+  text-align: center;
+  background: var(--bg);
+}
+#blind[hidden] {
+  display: none;
+}
+#blind h2 {
+  margin: 0 0 8px;
+  font-size: 22px;
+}
+.blind-surah {
+  font-size: 40px;
+  font-weight: 700;
+}
+.blind-where {
+  margin: 0;
+  color: var(--muted);
+}
+#blind .fine {
+  max-width: 320px;
+  color: var(--muted);
+  font-size: 13px;
+}
+/* Belt and braces: nothing behind the cover is readable or scrollable. */
+body.blind #app {
+  visibility: hidden;
+}
+body.blind {
+  overflow: hidden;
+}

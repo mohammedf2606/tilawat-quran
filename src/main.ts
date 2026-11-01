@@ -346,6 +346,25 @@ function followRecitation(surah: number, ayah: number, matched: number[]): void 
   if (moved) document.getElementById(`a-${surah}-${ayah}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
+/**
+ * The last ayah was recited. The engine has reset and keeps listening, so show the
+ * surah as done and let the reciter carry on with any surah (e.g. the next, after
+ * a basmala).
+ */
+function onSurahComplete(surah: number): void {
+  const s = quran.surahs[surah - 1];
+  const last = s.totalVerses;
+  progress.recordAyah(surah, last);
+  if (route.name === "surah" && route.id === surah) {
+    highlight(surah, last, s.ayahs[last - 1].words.map((_, i) => i));
+  }
+  // Forget the position so reciting this surah again still scrolls and highlights.
+  recitePos = null;
+  $correction.hidden = true;
+  setStatus(`${s.transliteration} complete · recite the next surah to carry on`, "live");
+  blindComplete(s.transliteration);
+}
+
 function setStatus(text: string, kind: "idle" | "busy" | "live" | "error" = "idle"): void {
   $status.textContent = text;
   $status.dataset.kind = kind;
@@ -379,6 +398,9 @@ const recognizer = new Recognizer((e: RecognizerEvent) => {
     }
     case "word_progress":
       followRecitation(e.surah, e.ayah, e.matched_indices);
+      break;
+    case "surah_complete":
+      onSurahComplete(e.surah);
       break;
     case "issue":
       logIssue(e.issue);
@@ -609,6 +631,15 @@ function updateBlind(surah: number, ayah: number): void {
     h("div", { class: "ar blind-surah", lang: "ar" }, s.name),
     h("p", { class: "blind-where" }, `${s.transliteration} · reached ayah ${ayah} of ${s.totalVerses}`),
     h("p", { class: "fine" }, `${blindHeard.size} ayah${blindHeard.size > 1 ? "s" : ""} recited. Tap stop to reveal the text and your review.`),
+  );
+}
+
+function blindComplete(name: string): void {
+  if ($blind.hidden) return;
+  $blind.replaceChildren(
+    h("h2", {}, "Reciting from memory"),
+    h("p", { class: "blind-where" }, `${name} complete`),
+    h("p", { class: "fine" }, "Start the next surah (from the basmala) to carry on, or tap stop to reveal the text and your review."),
   );
 }
 

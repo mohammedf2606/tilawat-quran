@@ -1,6 +1,6 @@
 # Tilawat
 
-An offline Quran app for Android. Read all 114 surahs in Arabic, with an English
+An offline Quran app for Android and iOS. Read all 114 surahs in Arabic, with an English
 translation, and tap the mic to recite — the on-device [Tilawa](https://github.com/yazinsai/tilawa)
 model works out which surah and ayah you're on and highlights each word as you say it.
 No network is needed at any point; the text, translation and model all ship inside the APK.
@@ -21,6 +21,11 @@ Both correction modes use Tilawa's correction engine. It flags only clear cases,
 so it misses some mistakes but rarely flags correct recitation. When you start from
 a surah page, the app holds the engine to that surah from the ayah on screen. From
 the home screen, it locks onto the first surah it recognises.
+
+When you finish a surah's last ayah, in any mode, Tilawat marks the surah complete and
+stops tracking it. The mic stays on, so you can go straight on to another surah, such
+as the next one, starting from the basmala. A basmala on its own isn't taken as
+Al-Fatihah until its second ayah follows.
 
 ## Progress
 

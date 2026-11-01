@@ -32,6 +32,8 @@ export type WorkerOut =
   | { type: "correction"; state: CorrectionState }
   /** Any mode except follow: a possible mistake was raised (live flags included). */
   | { type: "issue"; issue: CorrectionIssue }
+  /** The last ayah of a surah was recited; the engine was reset to find the next one. */
+  | { type: "surah_complete"; surah: number }
   | { type: "stopped" };
 
 const MODEL_URL = "/models/zipformer_a0w_ep1_a05.int8.onnx";
@@ -43,10 +45,25 @@ let passage: Passage | null = null;
 /** Passage locked from the first verse match when none was given (started from the home screen). */
 let autoPassage = false;
 let ayahCounts: number[] = [];
+/** Set when word progress reaches a surah's last word; handled after the current feed. */
+let completedSurah: number | null = null;
+/** True while wrapping up a completed surah, so the flush can't re-trigger completion. */
+let finishing = false;
+/** Live mode: a flag is waiting on the reciter, so the surah isn't finished yet. */
+let flagOpen = false;
+/**
+ * Looking for a fresh start (new recitation or after a completed surah). A lone
+ * basmala reads as 1:1, so hold 1:1 events until the next one shows whether it
+ * really was Al-Fatihah.
+ */
+let awaitingStart = true;
+let held: WorkerOutbound[] = [];
 
 const post = (msg: WorkerOut) => self.postMessage(msg);
 
 async function loadModel(): Promise<ArrayBuffer> {
+  // iOS's capacitor:// handler sends no content-length, so post a plain message first.
+  post({ type: "loading", message: "Loading model" });
   const res = await fetch(MODEL_URL);
   if (!res.ok || !res.body) throw new Error(`model fetch failed: ${res.status}`);
   const total = Number(res.headers.get("content-length")) || 0;
@@ -96,6 +113,16 @@ function applyMode(): void {
  */
 function forward(msgs: WorkerOutbound[], stopping = false): void {
   for (const m of msgs) {
+    if ((m.type === "verse_match" || m.type === "word_progress") && awaitingStart) {
+      if (m.surah === 1 && m.ayah === 1 && passage?.surah !== 1) {
+        held.push(m);
+        continue;
+      }
+      awaitingStart = false;
+      const pending = held;
+      held = [];
+      if (m.surah === 1 && m.ayah === 2) forward(pending, stopping);
+    }
     switch (m.type) {
       case "verse_match":
         post({ type: "verse_match", surah: m.surah, ayah: m.ayah, confidence: m.confidence });
@@ -114,12 +141,14 @@ function forward(msgs: WorkerOutbound[], stopping = false): void {
           matched_indices: m.matched_indices,
           total_words: m.total_words,
         });
+        if (isSurahEnd(m.surah, m.ayah, m.matched_indices, m.total_words)) completedSurah = m.surah;
         break;
       case "correction_note":
         post({ type: "issue", issue: m.issue });
         break;
       case "correction": {
         const { state } = m;
+        flagOpen = state.phase !== "idle";
         if (state.phase === "error" && state.issue) post({ type: "issue", issue: state.issue });
         if (state.phase === "error" && (mode === "review" || stopping)) {
           forward(session!.correct("review_later"), stopping);
@@ -132,16 +161,59 @@ function forward(msgs: WorkerOutbound[], stopping = false): void {
   }
 }
 
+/** The reciter reached the final word of a surah's last ayah, with most of that ayah heard. */
+function isSurahEnd(surah: number, ayah: number, matched: number[], total: number): boolean {
+  if (finishing || flagOpen || ayah !== ayahCounts[surah - 1] || total < 1) return false;
+  return matched.includes(total - 1) && matched.length >= Math.ceil(total / 2);
+}
+
+/**
+ * Close off a completed surah: run the end-of-take correction checks, then reset
+ * so the next surah is found from scratch (correction modes re-lock onto it).
+ * The microphone keeps running.
+ */
+async function finishSurah(): Promise<void> {
+  const surah = completedSurah!;
+  completedSurah = null;
+  if (!session) return;
+  finishing = true;
+  try {
+    if (mode !== "follow") forward(await session.stop(), true);
+    session.reset();
+    passage = null;
+    autoPassage = false;
+    flagOpen = false;
+    awaitingStart = true;
+    held = [];
+    applyMode();
+  } finally {
+    finishing = false;
+  }
+  post({ type: "surah_complete", surah });
+}
+
 async function handle(msg: WorkerIn): Promise<void> {
   switch (msg.type) {
     case "init":
       return init();
     case "audio":
       if (session) forward(await session.feed(msg.samples));
+      if (completedSurah !== null) await finishSurah();
       return;
     case "stop":
       if (session) {
-        forward(await session.stop(), true);
+        // A basmala-only take: report the 1:1 it really was.
+        awaitingStart = false;
+        forward(held, true);
+        held = [];
+        finishing = true; // stopping anyway; don't announce a completion now
+        try {
+          forward(await session.stop(), true);
+        } finally {
+          finishing = false;
+        }
+        completedSurah = null;
+        flagOpen = false;
         session.reset();
         if (autoPassage) session.setExpected(null);
         autoPassage = false;
@@ -150,6 +222,10 @@ async function handle(msg: WorkerIn): Promise<void> {
       return;
     case "reset":
       session?.reset();
+      completedSurah = null;
+      flagOpen = false;
+      awaitingStart = true;
+      held = [];
       return;
     case "set_mode":
       mode = msg.mode;

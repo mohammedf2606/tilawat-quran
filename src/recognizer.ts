@@ -58,6 +58,9 @@ export class Recognizer {
     } catch {
       this.ctx = new AudioContext();
     }
+    // iOS creates the context suspended once the tap's user activation has been
+    // used up by the awaits above; it then never pulls audio from the mic.
+    if (this.ctx.state === "suspended") await this.ctx.resume();
     await this.ctx.audioWorklet.addModule("/audio-processor.js");
     const source = this.ctx.createMediaStreamSource(this.stream);
     const node = new AudioWorkletNode(this.ctx, "audio-stream-processor");

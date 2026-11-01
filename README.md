@@ -41,6 +41,19 @@ Every build is signed with the same key (repo secrets `ANDROID_KEYSTORE_B64` and
 the key safe: if it's lost, the app must be uninstalled before a build signed with
 a new key can be installed.
 
+## iOS
+
+On a Mac with Xcode and your Apple ID added in Xcode → Settings → Accounts:
+
+```bash
+TEAM_ID=<your team ID> scripts/build-ios.sh                                     # build/ios/Tilawat.ipa
+TEAM_ID=<your team ID> EXPORT_METHOD=app-store-connect scripts/build-ios.sh   # for TestFlight (paid account)
+```
+
+The default `debugging` export installs on iPhones registered to your team. Connect
+the phone to the Mac once, with Developer Mode on, so Xcode registers it. CI also
+builds an unsigned `.ipa` (the `tilawat-ios-unsigned` artifact) for sideloading tools.
+
 ## How it's built
 
 | Layer | Tech |

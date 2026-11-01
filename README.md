@@ -5,6 +5,22 @@ translation, and tap the mic to recite — the on-device [Tilawa](https://github
 model works out which surah and ayah you're on and highlights each word as you say it.
 No network is needed at any point; the text, translation and model all ship inside the APK.
 
+## Recite modes
+
+Tap the mode pill above the mic to choose:
+
+- **Follow along**: finds your place and highlights each word as you recite.
+- **Live correction**: pauses at a possible mistake (missed or wrong word, harakah
+  slip, repeated word, skipped ayah) so you can retry the ayah, dismiss it, or save
+  it for later.
+- **Review after**: lets you recite uninterrupted, then lists possible mistakes
+  when you stop.
+
+Both correction modes use Tilawa's correction engine. It flags only clear cases,
+so it misses some mistakes but rarely flags correct recitation. When you start from
+a surah page, the app holds the engine to that surah from the ayah on screen. From
+the home screen, it locks onto the first surah it recognises.
+
 ## Install on your phone
 
 Every push to `main` builds an APK in GitHub Actions.

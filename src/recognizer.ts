@@ -1,5 +1,6 @@
 // Microphone capture (16 kHz mono via AudioWorklet) feeding the Tilawa worker.
-import type { WorkerIn, WorkerOut } from "./worker";
+import type { CorrectionAction } from "@tilawa/core";
+import type { Passage, ReciteMode, WorkerIn, WorkerOut } from "./worker";
 
 export type RecognizerEvent =
   | WorkerOut
@@ -41,9 +42,12 @@ export class Recognizer {
     return this.ready;
   }
 
-  async start(): Promise<void> {
+  /** Start listening. `passage` is what's on screen; correction modes lock onto it. */
+  async start(mode: ReciteMode, passage: Passage | null): Promise<void> {
     if (this.active) return;
     await this.load();
+    this.send({ type: "set_mode", mode });
+    this.send({ type: "set_expected", passage });
     this.stream = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
     });
@@ -66,6 +70,11 @@ export class Recognizer {
     source.connect(node);
     this.active = true;
     this.onEvent({ type: "listening", active: true });
+  }
+
+  /** Answer a live-correction flag (retry, dismiss, review later, ...). */
+  act(action: CorrectionAction): void {
+    this.send({ type: "correction_action", action });
   }
 
   async stop(): Promise<void> {

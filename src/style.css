@@ -9,6 +9,8 @@
   --current: #fbf3dc;
   --heard: #0f6b5c;
   --danger: #b3261e;
+  --flag: #c2410c;
+  --flag-bg: #fdecdf;
   --font-scale: 1;
   color-scheme: light;
 }
@@ -25,6 +27,8 @@
     --current: #23302b;
     --heard: #5fd4bc;
     --danger: #f2b8b5;
+    --flag: #fb923c;
+    --flag-bg: #3a2418;
     color-scheme: dark;
   }
 }
@@ -279,4 +283,134 @@ a.icon {
 #status[data-kind="error"] {
   color: var(--danger);
   border-color: var(--danger);
+}
+
+/* Recite mode ------------------------------------------------------------- */
+#mode {
+  position: fixed;
+  right: 16px;
+  bottom: calc(96px + env(safe-area-inset-bottom));
+  z-index: 10;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  font: 600 13px/1.2 system-ui, sans-serif;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 0.08);
+}
+
+/* Bottom sheets ----------------------------------------------------------- */
+.sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 20;
+  max-height: 75vh;
+  overflow-y: auto;
+  padding: 20px 16px calc(20px + env(safe-area-inset-bottom));
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+  border-radius: 20px 20px 0 0;
+  box-shadow: 0 -10px 30px rgb(0 0 0 / 0.15);
+}
+.sheet[hidden] {
+  display: none;
+}
+.sheet h2 {
+  margin: 4px 0 6px;
+  font-size: 20px;
+}
+.sheet header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.sheet .ref {
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 13px;
+}
+.sheet .desc {
+  margin: 0 0 8px;
+  color: var(--muted);
+}
+.sheet .fine {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.sheet .quote {
+  margin: 8px 0 16px;
+  font-size: 24px;
+  line-height: 2;
+  text-align: right;
+}
+.sheet .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.sheet .actions button,
+.mode-option {
+  flex: 1 1 auto;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--ink);
+  font: 600 15px/1.3 system-ui, sans-serif;
+}
+.sheet .actions button.primary {
+  flex-basis: 100%;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+.mode-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  margin-top: 8px;
+  text-align: left;
+}
+.mode-option small {
+  font-weight: 400;
+  color: var(--muted);
+}
+.mode-option.selected {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.issues {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.issues a {
+  display: block;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+.issues .quote {
+  margin: 4px 0 0;
+  font-size: 20px;
+}
+
+/* Flagged words ----------------------------------------------------------- */
+.flag,
+.ayah .w.flag {
+  color: var(--flag);
+  text-decoration: underline wavy var(--flag);
+  text-underline-offset: 10px;
+}
+.ayah.flag-ayah {
+  background: var(--flag-bg);
+  box-shadow: inset 4px 0 0 var(--flag);
+}
+.issues .ref,
+.issues b {
+  display: block;
 }

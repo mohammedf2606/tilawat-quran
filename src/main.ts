@@ -3,6 +3,8 @@ import "@fontsource/amiri/arabic-700.css";
 import "./style.css";
 import { loadQuran, matchesQuery, type QuranData, type Surah } from "./quran";
 import { Recognizer, type RecognizerEvent } from "./recognizer";
+import type { CorrectionAction, CorrectionIssue, CorrectionState } from "@tilawa/core";
+import type { Passage, ReciteMode } from "./worker";
 
 // ---------------------------------------------------------------------------
 // Persisted settings
@@ -11,10 +13,11 @@ interface Settings {
   showTranslation: boolean;
   fontScale: number;
   lastRead: { surah: number; ayah: number } | null;
+  mode: ReciteMode;
 }
 
 const SETTINGS_KEY = "tilawat.settings";
-const settings: Settings = { showTranslation: true, fontScale: 1, lastRead: null };
+const settings: Settings = { showTranslation: true, fontScale: 1, lastRead: null, mode: "follow" };
 try {
   Object.assign(settings, JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}"));
 } catch {
@@ -48,6 +51,10 @@ const arabicNumber = (n: number) => String(n).replace(/\d/g, (d) => AR_DIGITS[Nu
 const $app = document.getElementById("app")!;
 const $status = document.getElementById("status")!;
 const $mic = document.getElementById("mic") as HTMLButtonElement;
+const $mode = document.getElementById("mode") as HTMLButtonElement;
+const $modes = document.getElementById("modes")!;
+const $correction = document.getElementById("correction")!;
+const $review = document.getElementById("review")!;
 
 let quran: QuranData;
 
@@ -220,6 +227,7 @@ function renderSurah(s: Surah, scrollToAyah?: number): void {
     window.scrollTo(0, 0);
   }
   if (recitePos?.surah === s.id) highlight(recitePos.surah, recitePos.ayah, recitePos.matched);
+  paintIssues();
 }
 
 // ---------------------------------------------------------------------------
@@ -278,6 +286,15 @@ const recognizer = new Recognizer((e: RecognizerEvent) => {
     case "word_progress":
       followRecitation(e.surah, e.ayah, e.matched_indices);
       break;
+    case "issue":
+      logIssue(e.issue);
+      break;
+    case "correction":
+      onCorrection(e.state);
+      break;
+    case "stopped":
+      if (settings.mode !== "follow") showReview();
+      break;
     case "error":
       setStatus(`Error: ${e.message}`, "error");
       break;
@@ -288,10 +305,15 @@ $mic.addEventListener("click", async () => {
   $mic.disabled = true;
   try {
     if (recognizer.active) {
+      $correction.hidden = true;
       await recognizer.stop();
     } else {
       recitePos = null;
-      await recognizer.start();
+      issues.clear();
+      paintIssues();
+      $review.hidden = true;
+      $modes.hidden = true;
+      await recognizer.start(settings.mode, currentPassage());
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -302,6 +324,205 @@ $mic.addEventListener("click", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// Recite modes
+// ---------------------------------------------------------------------------
+const MODES: { id: ReciteMode; label: string; desc: string }[] = [
+  { id: "follow", label: "Follow along", desc: "Find your place and highlight words as you recite." },
+  { id: "live", label: "Live correction", desc: "Stop me at a possible mistake so I can retry the ayah." },
+  { id: "review", label: "Review after", desc: "Recite uninterrupted, then list possible mistakes when I stop." },
+];
+
+function renderModeButton(): void {
+  $mode.textContent = MODES.find((m) => m.id === settings.mode)!.label;
+}
+
+function openModes(): void {
+  $modes.replaceChildren(
+    h("h2", {}, "Recite mode"),
+    ...MODES.map((m) => {
+      const b = h(
+        "button",
+        { class: `mode-option${m.id === settings.mode ? " selected" : ""}`, "aria-pressed": String(m.id === settings.mode) },
+        h("b", {}, m.label),
+        h("small", {}, m.desc),
+      );
+      b.addEventListener("click", () => {
+        settings.mode = m.id;
+        saveSettings();
+        renderModeButton();
+        $modes.hidden = true;
+      });
+      return b;
+    }),
+  );
+  $review.hidden = true;
+  $modes.hidden = false;
+}
+
+$mode.addEventListener("click", () => {
+  if (recognizer.active) return setStatus("Stop reciting to change mode", "idle");
+  if ($modes.hidden) openModes();
+  else $modes.hidden = true;
+});
+
+/** In the reader, correction modes lock onto the surah from the ayah on screen. */
+function currentPassage(): Passage | null {
+  if (route.name !== "surah") return null;
+  const s = quran.surahs[route.id - 1];
+  const onScreen = settings.lastRead?.surah === s.id ? settings.lastRead.ayah : 1;
+  return { surah: s.id, ayah: Math.max(1, onScreen - 1), ayahEnd: s.totalVerses };
+}
+
+// ---------------------------------------------------------------------------
+// Correction: issue log, live sheet, end-of-recitation review
+// ---------------------------------------------------------------------------
+type IssueStatus = "open" | "deferred" | "dismissed" | "corrected";
+const issues = new Map<string, { issue: CorrectionIssue; status: IssueStatus }>();
+const issueKey = (i: CorrectionIssue) => `${i.surah}:${i.ayah}:${i.word}:${i.kind}`;
+
+const AYAH_LEVEL = new Set<CorrectionIssue["kind"]>(["possible_skipped_ayah", "unclear_ayah"]);
+const ISSUE_TEXT: Record<CorrectionIssue["kind"], [title: string, desc: string]> = {
+  possible_omission: ["Possible missed word", "A word here may have been left out."],
+  possible_substitution: ["Possible wrong word", "A different word may have been recited here."],
+  possible_vowel: ["Possible harakah mistake", "A short vowel on this word may have been changed."],
+  possible_repetition: ["Repeated word", "This word sounded like it was said twice."],
+  possible_skipped_ayah: ["Ayah may have been skipped", "Almost nothing of this ayah was heard."],
+  unclear_ayah: ["Couldn't follow this ayah", "Audio was heard, but it couldn't be matched to this ayah."],
+};
+
+function logIssue(issue: CorrectionIssue): void {
+  const key = issueKey(issue);
+  if (!issues.has(key)) issues.set(key, { issue, status: settings.mode === "live" ? "open" : "deferred" });
+  paintIssues();
+}
+
+function flaggedWords(i: CorrectionIssue): Set<number> {
+  return new Set(Array.from({ length: i.words ?? 1 }, (_, k) => i.word + k));
+}
+
+/** Mark unresolved issues in the reader: red words, or a red edge for ayah-level ones. */
+function paintIssues(): void {
+  document.querySelectorAll(".w.flag").forEach((el) => el.classList.remove("flag"));
+  document.querySelectorAll(".ayah.flag-ayah").forEach((el) => el.classList.remove("flag-ayah"));
+  for (const { issue, status } of issues.values()) {
+    if (status === "dismissed" || status === "corrected") continue;
+    const el = document.getElementById(`a-${issue.surah}-${issue.ayah}`);
+    if (!el) continue;
+    if (AYAH_LEVEL.has(issue.kind)) el.classList.add("flag-ayah");
+    const words = flaggedWords(issue);
+    el.querySelectorAll<HTMLElement>(".w").forEach((w) => {
+      if (words.has(Number(w.dataset.i))) w.classList.add("flag");
+    });
+  }
+}
+
+function quoteAyah(i: CorrectionIssue): HTMLElement {
+  const words = flaggedWords(i);
+  const ayah = quran.surahs[i.surah - 1].ayahs[i.ayah - 1];
+  return h(
+    "p",
+    { class: "ar quote", dir: "rtl", lang: "ar" },
+    ...ayah.words.flatMap((w, k) => [h("span", { class: words.has(k) ? "flag" : "" }, w), " "]),
+  );
+}
+
+function onCorrection(state: CorrectionState): void {
+  const entry = state.issue && issues.get(issueKey(state.issue));
+  if (entry && state.outcome) {
+    entry.status = state.outcome === "dismissed" ? "dismissed" : state.outcome === "corrected" ? "corrected" : "deferred";
+  }
+  if (entry && state.phase === "corrected") entry.status = "corrected";
+  paintIssues();
+
+  if (state.phase === "idle" || !state.issue) {
+    $correction.hidden = true;
+    if (recognizer.active) setStatus("Listening… carry on reciting", "live");
+    return;
+  }
+
+  const i = state.issue;
+  const s = quran.surahs[i.surah - 1];
+  if (route.name !== "surah" || route.id !== i.surah) location.hash = `#/surah/${i.surah}/${i.ayah}`;
+  else document.getElementById(`a-${i.surah}-${i.ayah}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+
+  const [title, desc] = ISSUE_TEXT[i.kind];
+  const button = (label: string, action: CorrectionAction, primary = false) => {
+    const b = h("button", { class: primary ? "primary" : "" }, label);
+    b.addEventListener("click", () => recognizer.act(action));
+    return b;
+  };
+  let heading = title;
+  let body = desc;
+  let actions: HTMLElement[];
+  if (state.phase === "retrying") {
+    heading = "Take your time";
+    body = `Recite ayah ${i.ayah} again from its beginning.`;
+    actions = [button("Stop retry", "stop_retry", true), button("Review later", "review_later")];
+    setStatus("Listening for your retry…", "live");
+  } else if (state.phase === "corrected") {
+    heading = "That sounded right";
+    body = "Carry on from where you left off.";
+    actions = [button("Continue reciting", "continue", true), button("Practise once more", "retry")];
+  } else {
+    actions = [
+      button("Retry ayah", "retry", true),
+      button("I recited it correctly", "dismiss"),
+      button("Review later", "review_later"),
+    ];
+    setStatus("Paused at a possible mistake", "error");
+  }
+  $correction.dataset.phase = state.phase;
+  $correction.replaceChildren(
+    h("small", { class: "ref" }, `${s.transliteration} ${i.surah}:${i.ayah}`),
+    h("h2", {}, heading),
+    h("p", { class: "desc" }, body),
+    quoteAyah(i),
+    h("div", { class: "actions" }, ...actions),
+  );
+  $correction.hidden = false;
+}
+
+function showReview(): void {
+  const open = [...issues.values()]
+    .filter((e) => e.status === "open" || e.status === "deferred")
+    .sort((a, b) => a.issue.surah - b.issue.surah || a.issue.ayah - b.issue.ayah || a.issue.word - b.issue.word);
+  const close = h("button", { class: "icon", "aria-label": "Close review" }, "✕");
+  close.addEventListener("click", () => ($review.hidden = true));
+  const header = h("header", {}, h("h2", {}, "Recitation review"), close);
+
+  if (!open.length) {
+    $review.replaceChildren(
+      header,
+      h("p", { class: "desc" }, "No possible mistakes found."),
+      h("p", { class: "fine" }, "Tilawat only flags clear cases, so it can miss some mistakes."),
+    );
+  } else {
+    $review.replaceChildren(
+      header,
+      h("p", { class: "desc" }, `${open.length} possible mistake${open.length > 1 ? "s" : ""}. Tap one to see it.`),
+      h(
+        "ul",
+        { class: "issues" },
+        ...open.map(({ issue }) => {
+          const a = h(
+            "a",
+            { href: `#/surah/${issue.surah}/${issue.ayah}` },
+            h("small", { class: "ref" }, `${quran.surahs[issue.surah - 1].transliteration} ${issue.surah}:${issue.ayah}`),
+            h("b", {}, ISSUE_TEXT[issue.kind][0]),
+            quoteAyah(issue),
+          );
+          a.addEventListener("click", () => ($review.hidden = true));
+          return h("li", {}, a);
+        }),
+      ),
+      h("p", { class: "fine" }, "These are possible mistakes, not certainties."),
+    );
+  }
+  setStatus("");
+  $review.hidden = false;
+}
+
+// ---------------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------------
 setStatus("Loading Quran…", "busy");
@@ -310,6 +531,7 @@ loadQuran()
     quran = q;
     setStatus("");
     window.addEventListener("hashchange", render);
+    renderModeButton();
     render();
   })
   .catch((err) => setStatus(`Failed to load Quran data: ${err.message}`, "error"));

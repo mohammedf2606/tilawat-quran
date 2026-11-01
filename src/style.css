@@ -11,6 +11,7 @@
   --danger: #b3261e;
   --flag: #c2410c;
   --flag-bg: #fdecdf;
+  --recited: #4b63c4;
   --font-scale: 1;
   color-scheme: light;
 }
@@ -29,6 +30,7 @@
     --danger: #f2b8b5;
     --flag: #fb923c;
     --flag-bg: #3a2418;
+    --recited: #93a5f0;
     color-scheme: dark;
   }
 }
@@ -220,7 +222,7 @@ a.icon {
   color: var(--heard);
 }
 .ayah .end {
-  color: var(--accent);
+  color: var(--muted);
   white-space: nowrap;
 }
 .ayah .tr {
@@ -455,4 +457,73 @@ body.blind #app {
 }
 body.blind {
   overflow: hidden;
+}
+
+/* Long-term progress ------------------------------------------------------ */
+.bar {
+  --pct: 0%;
+  height: 4px;
+  margin-top: 6px;
+  border-radius: 999px;
+  background: linear-gradient(var(--accent), var(--accent)) left / var(--pct) 100% no-repeat, var(--line);
+}
+.surah-list .progress-line {
+  color: var(--accent);
+}
+.progress-panel {
+  margin: 8px 0 4px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+}
+.progress-panel[hidden] {
+  display: none;
+}
+.progress-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 12px;
+}
+.progress-head small {
+  color: var(--muted);
+}
+.sessions {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+.sessions li {
+  padding: 3px 0;
+}
+.sessions li span {
+  color: var(--ink);
+  font-weight: 600;
+}
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.legend [data-k="clean"],
+.ayah[data-status="clean"] .end {
+  color: var(--heard);
+}
+.legend [data-k="mistake"],
+.ayah[data-status="mistake"] .end {
+  color: var(--flag);
+}
+.legend [data-k="recited"],
+.ayah[data-status="recited"] .end {
+  color: var(--recited);
+}
+.ayah[data-status] .end {
+  font-weight: 700;
 }

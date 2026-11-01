@@ -46,6 +46,7 @@ export class Recognizer {
   async start(mode: ReciteMode, passage: Passage | null): Promise<void> {
     if (this.active) return;
     await this.load();
+    this.send({ type: "reset" });
     this.send({ type: "set_mode", mode });
     this.send({ type: "set_expected", passage });
     this.stream = await navigator.mediaDevices.getUserMedia({

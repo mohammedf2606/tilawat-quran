@@ -5,6 +5,7 @@ import { loadQuran, matchesQuery, type QuranData, type Surah } from "./quran";
 import { Recognizer, type RecognizerEvent } from "./recognizer";
 import type { CorrectionAction, CorrectionIssue, CorrectionState } from "@tilawa/core";
 import type { Passage, ReciteMode } from "./worker";
+import * as progress from "./progress";
 
 // ---------------------------------------------------------------------------
 // Persisted settings
@@ -83,6 +84,32 @@ function render(): void {
 // ---------------------------------------------------------------------------
 let searchQuery = "";
 
+function surahMeta(s: Surah): HTMLElement {
+  const p = progress.surahProgress(s.id);
+  const meta = h(
+    "div",
+    { class: "meta" },
+    h("b", {}, s.transliteration),
+    h("small", {}, `${s.translation} · ${s.type === "meccan" ? "Meccan" : "Medinan"} · ${s.totalVerses} ayat`),
+  );
+  if (p.recited) {
+    const pct = Math.round((p.recited / s.totalVerses) * 100);
+    meta.append(
+      h("small", { class: "progress-line" }, `${p.recited}/${s.totalVerses} recited · ${progress.relativeTime(p.lastRecitedAt!)}`),
+      progressBar(pct),
+    );
+  } else if (p.lastView) {
+    meta.append(h("small", { class: "progress-line" }, `Viewed ${progress.relativeTime(p.lastView.at)} · ayah ${p.lastView.ayah}`));
+  }
+  return meta;
+}
+
+function progressBar(pct: number): HTMLElement {
+  const bar = h("div", { class: "bar", role: "progressbar", "aria-valuenow": String(pct), "aria-valuemin": "0", "aria-valuemax": "100" });
+  bar.style.setProperty("--pct", `${pct}%`);
+  return bar;
+}
+
 function renderHome(): void {
   const list = h("ul", { class: "surah-list" });
   const fill = () => {
@@ -97,12 +124,7 @@ function renderHome(): void {
               "a",
               { href: `#/surah/${s.id}` },
               h("span", { class: "num" }, String(s.id)),
-              h(
-                "div",
-                { class: "meta" },
-                h("b", {}, s.transliteration),
-                h("small", {}, `${s.translation} · ${s.type === "meccan" ? "Meccan" : "Medinan"} · ${s.totalVerses} ayat`),
-              ),
+              surahMeta(s),
               h("span", { class: "ar", lang: "ar" }, s.name),
             ),
           ),
@@ -204,8 +226,14 @@ function renderSurah(s: Surah, scrollToAyah?: number): void {
     intro.append(h("div", { class: "ar basmala", lang: "ar" }, "بِسْمِ ٱللَّهِ ٱلرَّحْمَٰنِ ٱلرَّحِيمِ"));
   }
 
-  $app.replaceChildren(header, intro, h("section", { class: "ayahs" }, ...ayahs));
+  const panel = h("div", { class: "progress-panel" });
+  $app.replaceChildren(header, intro, panel, h("section", { class: "ayahs" }, ...ayahs));
   applyReaderPrefs();
+  paintProgress(s);
+
+  // Reopening a surah from the list resumes where it was last viewed.
+  const lastView = progress.surahProgress(s.id).lastView;
+  if (!scrollToAyah && lastView && lastView.ayah > 1) scrollToAyah = lastView.ayah;
 
   // Remember the topmost visible ayah as the reading position.
   ayahObserver?.disconnect();
@@ -217,6 +245,7 @@ function renderSurah(s: Surah, scrollToAyah?: number): void {
       if (!top) return;
       settings.lastRead = { surah: s.id, ayah: Number((top.target as HTMLElement).dataset.ayah) };
       saveSettings();
+      progress.recordView(s.id, settings.lastRead.ayah);
     },
     { rootMargin: "-80px 0px -60% 0px" },
   );
@@ -231,10 +260,71 @@ function renderSurah(s: Surah, scrollToAyah?: number): void {
   paintIssues();
 }
 
+const MODE_NAMES: Record<progress.SessionMode, string> = { follow: "Follow along", live: "Live correction", review: "Review after" };
+const STATUS_TITLES: Record<progress.AyahStatus, string> = {
+  recited: "Recited (follow along)",
+  clean: "No mistakes found last time",
+  mistake: "Possible mistake last time",
+};
+
+/** The stored progress for the surah on screen: summary panel and per-ayah markers. */
+function paintProgress(s: Surah): void {
+  const panel = document.querySelector<HTMLElement>(".progress-panel");
+  if (!panel) return;
+  const p = progress.surahProgress(s.id);
+  document.querySelectorAll<HTMLElement>(".ayah[data-status]").forEach((el) => {
+    delete el.dataset.status;
+    el.querySelector(".end")?.removeAttribute("title");
+  });
+  for (const [ayah, status] of p.ayahStatus) {
+    const el = document.getElementById(`a-${s.id}-${ayah}`);
+    if (!el) continue;
+    el.dataset.status = status;
+    el.querySelector(".end")?.setAttribute("title", STATUS_TITLES[status]);
+  }
+  if (!p.sessions) {
+    panel.replaceChildren();
+    panel.hidden = true;
+    return;
+  }
+  const pct = Math.round((p.recited / s.totalVerses) * 100);
+  const sessionRow = (sess: progress.Session) => {
+    const nums = sess.ayahs.filter((k) => k.startsWith(`${s.id}:`)).map((k) => Number(k.split(":")[1]));
+    const range = nums.length ? (Math.min(...nums) === Math.max(...nums) ? `ayah ${nums[0]}` : `ayat ${Math.min(...nums)}–${Math.max(...nums)}`) : "no ayat located";
+    const open = sess.issues.filter((i) => i.surah === s.id && (i.status === "open" || i.status === "deferred")).length;
+    const result = sess.mode === "follow" ? "" : open ? ` · ${open} possible mistake${open > 1 ? "s" : ""}` : " · no mistakes found";
+    return h("li", {}, h("span", {}, progress.relativeTime(sess.endedAt ?? sess.startedAt)), ` ${MODE_NAMES[sess.mode]} · ${range}${result}`);
+  };
+  panel.replaceChildren(
+    h("div", { class: "progress-head" }, h("b", {}, "Your progress"), h("small", {}, `${p.recited} of ${s.totalVerses} ayat recited · ${p.sessions} session${p.sessions > 1 ? "s" : ""}`)),
+    progressBar(pct),
+    h("ul", { class: "sessions" }, ...p.recentSessions.map(sessionRow)),
+    h(
+      "p",
+      { class: "legend" },
+      h("span", { "data-k": "clean" }, "● no mistakes"),
+      h("span", { "data-k": "mistake" }, "● possible mistake"),
+      h("span", { "data-k": "recited" }, "● recited"),
+    ),
+  );
+  panel.hidden = false;
+}
+
 // ---------------------------------------------------------------------------
 // Live recitation tracking
 // ---------------------------------------------------------------------------
 let recitePos: { surah: number; ayah: number; matched: number[] } | null = null;
+
+/** Clear this session's colouring: heard words, the current ayah and flagged mistakes. */
+function clearRecitationMarks(): void {
+  recitePos = null;
+  issues.clear();
+  document.querySelectorAll(".w.heard").forEach((el) => el.classList.remove("heard"));
+  document.querySelectorAll(".ayah.current").forEach((el) => el.classList.remove("current"));
+  paintIssues();
+  $correction.hidden = true;
+  $review.hidden = true;
+}
 
 function highlight(surah: number, ayah: number, matched: number[]): void {
   document.querySelectorAll(".ayah.current").forEach((el) => el.classList.remove("current"));
@@ -283,6 +373,7 @@ const recognizer = new Recognizer((e: RecognizerEvent) => {
       const s = quran.surahs[e.surah - 1];
       setStatus(`${s.transliteration} ${e.surah}:${e.ayah}`, "live");
       updateBlind(e.surah, e.ayah);
+      progress.recordAyah(e.surah, e.ayah);
       followRecitation(e.surah, e.ayah, recitePos?.surah === e.surah && recitePos.ayah === e.ayah ? recitePos.matched : []);
       break;
     }
@@ -296,6 +387,8 @@ const recognizer = new Recognizer((e: RecognizerEvent) => {
       onCorrection(e.state);
       break;
     case "stopped":
+      progress.endSession();
+      if (route.name === "surah") paintProgress(quran.surahs[route.id - 1]);
       if (settings.mode !== "follow") showReview();
       break;
     case "error":
@@ -311,11 +404,9 @@ $mic.addEventListener("click", async () => {
       $correction.hidden = true;
       await recognizer.stop();
     } else {
-      recitePos = null;
-      issues.clear();
-      paintIssues();
-      $review.hidden = true;
+      clearRecitationMarks();
       $modes.hidden = true;
+      progress.startSession(settings.mode);
       await recognizer.start(settings.mode, currentPassage());
     }
   } catch (err) {
@@ -350,6 +441,7 @@ function openModes(): void {
         h("small", {}, m.desc),
       );
       b.addEventListener("click", () => {
+        if (settings.mode !== m.id) clearRecitationMarks();
         settings.mode = m.id;
         saveSettings();
         renderModeButton();
@@ -379,7 +471,7 @@ function currentPassage(): Passage | null {
 // ---------------------------------------------------------------------------
 // Correction: issue log, live sheet, end-of-recitation review
 // ---------------------------------------------------------------------------
-type IssueStatus = "open" | "deferred" | "dismissed" | "corrected";
+type IssueStatus = progress.IssueOutcome;
 const issues = new Map<string, { issue: CorrectionIssue; status: IssueStatus }>();
 const issueKey = (i: CorrectionIssue) => `${i.surah}:${i.ayah}:${i.word}:${i.kind}`;
 
@@ -395,7 +487,11 @@ const ISSUE_TEXT: Record<CorrectionIssue["kind"], [title: string, desc: string]>
 
 function logIssue(issue: CorrectionIssue): void {
   const key = issueKey(issue);
-  if (!issues.has(key)) issues.set(key, { issue, status: settings.mode === "live" ? "open" : "deferred" });
+  if (!issues.has(key)) {
+    const status = settings.mode === "live" ? "open" : "deferred";
+    issues.set(key, { issue, status });
+    progress.recordIssue(issue, status);
+  }
   paintIssues();
 }
 
@@ -435,6 +531,7 @@ function onCorrection(state: CorrectionState): void {
     entry.status = state.outcome === "dismissed" ? "dismissed" : state.outcome === "corrected" ? "corrected" : "deferred";
   }
   if (entry && state.phase === "corrected") entry.status = "corrected";
+  if (entry) progress.updateIssue(entry.issue, entry.status);
   paintIssues();
 
   if (state.phase === "idle" || !state.issue) {
@@ -559,8 +656,8 @@ function showReview(): void {
 // Boot
 // ---------------------------------------------------------------------------
 setStatus("Loading Quran…", "busy");
-loadQuran()
-  .then((q) => {
+Promise.all([loadQuran(), progress.loadProgress()])
+  .then(([q]) => {
     quran = q;
     setStatus("");
     window.addEventListener("hashchange", render);

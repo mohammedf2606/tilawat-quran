@@ -22,6 +22,16 @@ so it misses some mistakes but rarely flags correct recitation. When you start f
 a surah page, the app holds the engine to that surah from the ayah on screen. From
 the home screen, it locks onto the first surah it recognises.
 
+## Progress
+
+Every recitation is saved as a session in the phone's native storage, so progress
+survives restarts. The surah list shows how many ayat of each surah you've recited and
+when. Each surah page shows a progress summary, your recent sessions, and a marker on
+each ayah from the last time you recited it: green for no mistakes found, orange for a
+possible mistake, and blue for recited in Follow along. Reopening a surah takes you
+back to where you were. Pressing the mic or changing mode clears the live highlighting;
+saved progress stays.
+
 ## Install on your phone (with automatic updates)
 
 Every push to `main` builds a signed APK and publishes it as the latest GitHub

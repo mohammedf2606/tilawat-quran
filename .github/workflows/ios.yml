@@ -1,0 +1,45 @@
+name: Build iOS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  ipa:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/cache@v4
+        with:
+          path: public/models
+          key: tilawa-assets-${{ hashFiles('scripts/fetch-assets.sh') }}
+
+      - run: npm ci
+      - run: npm run assets
+      - run: npm run build && npx cap sync ios
+
+      # Unsigned: sideloading tools (e.g. Sideloadly, AltStore) re-sign it with your Apple ID.
+      - name: Build unsigned app
+        run: |
+          xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} build
+
+      - name: Package IPA
+        run: |
+          mkdir -p Payload out
+          cp -R build/Build/Products/Release-iphoneos/App.app Payload/
+          zip -qry out/tilawat-ios-${{ github.run_number }}-unsigned.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tilawat-ios-unsigned
+          path: out/*.ipa

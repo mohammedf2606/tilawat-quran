@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "assets": "bash scripts/fetch-assets.sh",
+    "scripts-data": "node scripts/fetch-scripts.mjs",
     "dev": "vite",
     "build": "tsc && vite build",
     "android:sync": "npm run build && cap sync android"

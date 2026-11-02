@@ -9,3 +9,9 @@
   npm package (Tanzil Uthmani text, Saheeh International translation).
 - **ONNX Runtime Web** — MIT, © Microsoft.
 - **Amiri font** — SIL Open Font License 1.1.
+- **Uthmanic Hafs and IndoPak word text** (`public/data/script_hafs.json`, `script_indopak.json`) —
+  from the Quran.com API (`text_qpc_hafs`, `text_indopak`), built by `scripts/fetch-scripts.mjs`.
+- **KFGQPC Uthmanic Script HAFS font** (`public/fonts/UthmanicHafs1Ver18.woff2`) — King Fahd
+  Glorious Quran Printing Complex, free to use and redistribute unmodified.
+- **IndoPak Nastaleeq font** (`public/fonts/indopak-nastaleeq-v4.2.1.woff2`) — as distributed by
+  Quran.com (quran/quran.com-frontend-next).

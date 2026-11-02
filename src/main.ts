@@ -1,7 +1,7 @@
 import "@fontsource/amiri/arabic-400.css";
 import "@fontsource/amiri/arabic-700.css";
 import "./style.css";
-import { loadQuran, matchesQuery, type QuranData, type Surah } from "./quran";
+import { applyScript, basmala, loadQuran, matchesQuery, SCRIPTS, type QuranData, type Script, type Surah } from "./quran";
 import { Recognizer, type RecognizerEvent } from "./recognizer";
 import type { CorrectionAction, CorrectionIssue, CorrectionState } from "@tilawa/core";
 import type { Passage, ReciteMode } from "./worker";
@@ -15,10 +15,11 @@ interface Settings {
   fontScale: number;
   lastRead: { surah: number; ayah: number } | null;
   mode: ReciteMode;
+  script: Script;
 }
 
 const SETTINGS_KEY = "tilawat.settings";
-const settings: Settings = { showTranslation: true, fontScale: 1, lastRead: null, mode: "follow" };
+const settings: Settings = { showTranslation: true, fontScale: 1, lastRead: null, mode: "follow", script: "amiri" };
 try {
   Object.assign(settings, JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}"));
 } catch {
@@ -176,6 +177,7 @@ let ayahObserver: IntersectionObserver | null = null;
 function applyReaderPrefs(): void {
   document.documentElement.style.setProperty("--font-scale", String(settings.fontScale));
   document.body.classList.toggle("hide-translation", !settings.showTranslation);
+  document.body.dataset.script = settings.script;
 }
 
 function renderSurah(s: Surah, scrollToAyah?: number): void {
@@ -194,6 +196,27 @@ function renderSurah(s: Surah, scrollToAyah?: number): void {
     saveSettings();
     applyReaderPrefs();
   });
+  const scriptBtn = h("button", { class: "icon script", "aria-label": "Change Arabic script" }, "خط");
+  scriptBtn.addEventListener("click", async () => {
+    const i = SCRIPTS.findIndex((x) => x.id === settings.script);
+    const next = SCRIPTS[(i + 1) % SCRIPTS.length];
+    scriptBtn.disabled = true;
+    try {
+      await applyScript(quran, next.id);
+      settings.script = next.id;
+      saveSettings();
+      const ayah = settings.lastRead?.surah === s.id ? settings.lastRead.ayah : undefined;
+      renderSurah(s, ayah);
+      setStatus(`Script: ${next.label}`, "idle");
+      setTimeout(() => {
+        if ($status.textContent === `Script: ${next.label}`) setStatus("");
+      }, 1500);
+    } catch (err) {
+      setStatus(`Couldn't load ${next.label}: ${err instanceof Error ? err.message : err}`, "error");
+    } finally {
+      scriptBtn.disabled = false;
+    }
+  });
   const back = h("a", { class: "icon", href: "#/", "aria-label": "All surahs" }, "‹");
 
   const header = h(
@@ -203,6 +226,7 @@ function renderSurah(s: Surah, scrollToAyah?: number): void {
     h("div", { class: "title" }, h("b", {}, `${s.id}. ${s.transliteration}`), h("small", {}, s.translation)),
     fontBtn("A−", -0.1),
     fontBtn("A+", 0.1),
+    scriptBtn,
     trBtn,
   );
 
@@ -214,7 +238,8 @@ function renderSurah(s: Surah, scrollToAyah?: number): void {
         "p",
         { class: "ar", dir: "rtl", lang: "ar" },
         ...a.words.flatMap((w, i) => [h("span", { class: "w", "data-i": String(i) }, w), " "]),
-        h("span", { class: "end" }, `۝${arabicNumber(a.ayah)}`),
+        // The Hafs font draws the ayah-end ornament around bare digits itself.
+        h("span", { class: "end" }, `${settings.script === "hafs" ? "" : "۝"}${arabicNumber(a.ayah)}`),
       ),
       h("p", { class: "tr" }, h("span", { class: "n" }, `${a.surah}:${a.ayah}`), " ", a.translation),
     ),
@@ -223,7 +248,7 @@ function renderSurah(s: Surah, scrollToAyah?: number): void {
   const intro = h("div", { class: "surah-intro" }, h("div", { class: "ar surah-name", lang: "ar" }, s.name));
   // Al-Fatihah's basmala is its first ayah; At-Tawbah has none.
   if (s.id !== 1 && s.id !== 9) {
-    intro.append(h("div", { class: "ar basmala", lang: "ar" }, "بِسْمِ ٱللَّهِ ٱلرَّحْمَٰنِ ٱلرَّحِيمِ"));
+    intro.append(h("div", { class: "ar basmala", lang: "ar" }, settings.script === "amiri" ? "بِسْمِ ٱللَّهِ ٱلرَّحْمَٰنِ ٱلرَّحِيمِ" : basmala(quran)));
   }
 
   const panel = h("div", { class: "progress-panel" });
@@ -688,8 +713,11 @@ function showReview(): void {
 // ---------------------------------------------------------------------------
 setStatus("Loading Quran…", "busy");
 Promise.all([loadQuran(), progress.loadProgress()])
-  .then(([q]) => {
+  .then(async ([q]) => {
     quran = q;
+    await applyScript(q, settings.script).catch(() => {
+      settings.script = "amiri";
+    });
     setStatus("");
     window.addEventListener("hashchange", render);
     renderModeButton();

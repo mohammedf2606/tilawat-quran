@@ -59,8 +59,37 @@ a {
   text-decoration: none;
 }
 
+@font-face {
+  font-family: "UthmanicHafs";
+  src: url("/fonts/UthmanicHafs1Ver18.woff2") format("woff2");
+  font-display: swap;
+}
+@font-face {
+  font-family: "IndoPak";
+  src: url("/fonts/indopak-nastaleeq-v4.2.1.woff2") format("woff2");
+  font-display: swap;
+}
+
 .ar {
   font-family: "Amiri", "Noto Naskh Arabic", serif;
+}
+/* The surah name stays in Amiri; ayahs, the basmala and quotes follow the script. */
+[data-script="hafs"] .ar:not(.surah-name) {
+  font-family: "UthmanicHafs", "Amiri", serif;
+}
+[data-script="indopak"] .ar:not(.surah-name) {
+  font-family: "IndoPak", "Amiri", serif;
+}
+[data-script="indopak"] .ayah .ar {
+  line-height: 2.4;
+}
+/* The IndoPak font has no ayah-end ornament for multi-digit numbers. */
+[data-script="indopak"] .ayah .end {
+  font-family: "Amiri", serif;
+}
+.icon.script {
+  font-family: "Amiri", serif;
+  font-size: 18px;
 }
 
 /* Header ------------------------------------------------------------------ */

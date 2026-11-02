@@ -5,7 +5,10 @@
 export interface Ayah {
   surah: number;
   ayah: number;
+  /** Words in the current script (see {@link applyScript}); indices match the corpus. */
   words: string[];
+  /** The corpus (Tanzil Uthmani) words, shown with the Amiri font. */
+  uthmani: string[];
   translation: string;
 }
 
@@ -65,14 +68,56 @@ export function loadQuran(): Promise<QuranData> {
           surah: s.id,
           ayah: v.id,
           // Fall back to the quran_en text if the corpus ever lacks an ayah.
-          words: corpusAyahs[i]?.w.map((w) => w[2]) ?? v.text.split(/\s+/),
+          words: [],
+          uthmani: corpusAyahs[i]?.w.map((w) => w[2]) ?? v.text.split(/\s+/),
           translation: v.translation,
         })),
       };
     });
+    for (const s of surahs) for (const a of s.ayahs) a.words = a.uthmani;
     return { surahs, corpus };
   })();
   return cached;
+}
+
+/** amiri = corpus text in Amiri; hafs = KFGQPC Uthmanic Hafs; indopak = IndoPak Nastaleeq. */
+export type Script = "amiri" | "hafs" | "indopak";
+export const SCRIPTS: { id: Script; label: string }[] = [
+  { id: "amiri", label: "Amiri" },
+  { id: "hafs", label: "Uthmanic (Hafs)" },
+  { id: "indopak", label: "IndoPak" },
+];
+
+const scriptCache = new Map<Script, Promise<string[][][]>>();
+
+/**
+ * Switch every ayah's `words` to the given script. The script files are word
+ * lists aligned to the corpus (scripts/fetch-scripts.mjs), so word indices from
+ * the recogniser still point at the right word.
+ */
+export async function applyScript(data: QuranData, script: Script): Promise<void> {
+  if (script === "amiri") {
+    for (const s of data.surahs) for (const a of s.ayahs) a.words = a.uthmani;
+    return;
+  }
+  let p = scriptCache.get(script);
+  if (!p) {
+    p = fetchJson<string[][][]>(`/data/script_${script}.json`);
+    scriptCache.set(script, p);
+    p.catch(() => scriptCache.delete(script));
+  }
+  const words = await p;
+  for (const s of data.surahs) {
+    for (const a of s.ayahs) {
+      const w = words[s.id - 1]?.[a.ayah - 1];
+      a.words = w && w.length === a.uthmani.length ? w : a.uthmani;
+    }
+  }
+}
+
+/** The basmala as written in the given script (Al-Fatihah's first ayah). */
+export function basmala(data: QuranData): string {
+  return data.surahs[0].ayahs[0].words.join(" ");
 }
 
 const DIACRITICS = /[ً-ٰٟۖ-ۭـ]/g;

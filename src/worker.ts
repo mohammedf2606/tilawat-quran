@@ -100,10 +100,17 @@ async function init(): Promise<void> {
   post({ type: "ready" });
 }
 
+/**
+ * With no passage given, correction modes start in plain tracking: a correction
+ * engine that hears a lone basmala locks onto Al-Fatihah and won't let go. Once
+ * the start is resolved, forward() switches to correction on the real surah.
+ */
+const correcting = () => mode !== "follow" && (passage !== null || !awaitingStart);
+
 function applyMode(): void {
   if (!session) return;
-  forward(session.setMode(mode === "follow" ? "tracking" : "correction"));
-  session.setExpected(mode === "follow" ? null : passage);
+  forward(session.setMode(correcting() ? "correction" : "tracking"));
+  session.setExpected(correcting() ? passage : null);
 }
 
 /**
@@ -122,6 +129,13 @@ function forward(msgs: WorkerOutbound[], stopping = false): void {
       const pending = held;
       held = [];
       if (m.surah === 1 && m.ayah === 2) forward(pending, stopping);
+      if (mode !== "follow" && !passage) {
+        // Start resolved: turn correction on and lock onto this surah.
+        const first = m.surah === 1 && pending.length ? 1 : m.ayah;
+        autoPassage = true;
+        forward(session!.setMode("correction"), stopping);
+        session!.setExpected({ surah: m.surah, ayah: first, ayahEnd: ayahCounts[m.surah - 1] });
+      }
     }
     switch (m.type) {
       case "verse_match":

@@ -6,6 +6,9 @@ import { Recognizer, type RecognizerEvent } from "./recognizer";
 import type { CorrectionAction, CorrectionIssue, CorrectionState } from "@tilawa/core";
 import type { Passage, ReciteMode } from "./worker";
 import * as progress from "./progress";
+import * as plans from "./plans";
+import * as reminders from "./reminders";
+import { Waveform } from "./waveform";
 
 // ---------------------------------------------------------------------------
 // Persisted settings
@@ -16,10 +19,18 @@ interface Settings {
   lastRead: { surah: number; ayah: number } | null;
   mode: ReciteMode;
   script: Script;
+  reminder: reminders.ReminderSettings;
 }
 
 const SETTINGS_KEY = "tilawat.settings";
-const settings: Settings = { showTranslation: true, fontScale: 1, lastRead: null, mode: "follow", script: "amiri" };
+const settings: Settings = {
+  showTranslation: true,
+  fontScale: 1,
+  lastRead: null,
+  mode: "follow",
+  script: "amiri",
+  reminder: { enabled: false, time: "20:00" },
+};
 try {
   Object.assign(settings, JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}"));
 } catch {
@@ -58,17 +69,30 @@ const $modes = document.getElementById("modes")!;
 const $correction = document.getElementById("correction")!;
 const $review = document.getElementById("review")!;
 const $blind = document.getElementById("blind")!;
+const $wave = document.getElementById("wave")!;
+const waveform = new Waveform($wave.querySelector("canvas")!, (level) =>
+  $mic.style.setProperty("--level", level.toFixed(3)),
+);
 
 let quran: QuranData;
 
 // ---------------------------------------------------------------------------
 // Routing (hash-based so Android's back button walks history)
 // ---------------------------------------------------------------------------
-type Route = { name: "home" } | { name: "surah"; id: number; ayah?: number };
+type Route =
+  | { name: "home" }
+  | { name: "surah"; id: number; ayah?: number }
+  | { name: "plans" }
+  | { name: "plan-new" }
+  | { name: "plan"; id: string };
 
 function parseRoute(): Route {
   const m = location.hash.match(/^#\/surah\/(\d+)(?:\/(\d+))?/);
   if (m) return { name: "surah", id: Number(m[1]), ayah: m[2] ? Number(m[2]) : undefined };
+  if (location.hash === "#/plans") return { name: "plans" };
+  if (location.hash === "#/plans/new") return { name: "plan-new" };
+  const p = location.hash.match(/^#\/plans\/([\w-]+)/);
+  if (p) return { name: "plan", id: p[1] };
   return { name: "home" };
 }
 
@@ -77,6 +101,9 @@ let route: Route = { name: "home" };
 function render(): void {
   route = parseRoute();
   if (route.name === "surah") renderSurah(quran.surahs[route.id - 1], route.ayah);
+  else if (route.name === "plans") renderPlans();
+  else if (route.name === "plan-new") renderPlanNew();
+  else if (route.name === "plan") renderPlan(route.id);
   else renderHome();
 }
 
@@ -146,6 +173,7 @@ function renderHome(): void {
 
   const children: Node[] = [
     h("header", { class: "top" }, h("h1", {}, "Tilawat"), h("span", { class: "sub" }, "Offline Quran")),
+    tabs("home"),
   ];
   const last = settings.lastRead;
   if (last) {
@@ -167,6 +195,487 @@ function renderHome(): void {
   $app.replaceChildren(...children);
   fill();
   window.scrollTo(0, 0);
+}
+
+
+// ---------------------------------------------------------------------------
+// Study plans: tab, builder, schedule
+// ---------------------------------------------------------------------------
+function tabs(active: "home" | "plans"): HTMLElement {
+  const tab = (id: "home" | "plans", href: string, label: string) =>
+    h("a", { href, class: `tab${id === active ? " active" : ""}`, ...(id === active ? { "aria-current": "page" } : {}) }, label);
+  return h("nav", { class: "tabs" }, tab("home", "#/", "Surahs"), tab("plans", "#/plans", "Study plans"));
+}
+
+const surahName = (n: number) => quran.surahs[n - 1].transliteration;
+
+function formatRange(from: plans.AyahRef, to: plans.AyahRef): string {
+  const whole = (r: plans.AyahRef, end: boolean) => (end ? r.ayah === quran.surahs[r.surah - 1].totalVerses : r.ayah === 1);
+  if (from.surah === to.surah) {
+    if (whole(from, false) && whole(to, true)) return surahName(from.surah);
+    return `${surahName(from.surah)} ${from.ayah}–${to.ayah}`;
+  }
+  const a = whole(from, false) ? surahName(from.surah) : `${surahName(from.surah)} ${from.ayah}`;
+  const b = whole(to, true) ? surahName(to.surah) : `${surahName(to.surah)} ${to.ayah}`;
+  return `${a} – ${b}`;
+}
+
+const formatDate = (d: Date) => d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+const GOAL_VERB: Record<plans.PlanGoal, string> = { read: "Read", memorise: "Memorise" };
+
+/** Days done: ticked by hand, or every ayah recited since the plan started. */
+function planStatus(plan: plans.Plan) {
+  const portions = plans.schedule(quran, plan);
+  const recited = progress.recitedSince(plans.parseDate(plan.start).getTime());
+  const manual = new Set(plan.done);
+  const done = portions.map((p) => {
+    const keys = plans.portionKeys(quran, p);
+    const heard = keys.filter((k) => recited.has(k)).length;
+    return { manual: manual.has(p.day), heard, complete: manual.has(p.day) || heard === keys.length };
+  });
+  return { portions, done, count: done.filter((d) => d.complete).length };
+}
+
+function renderPlans(): void {
+  const list = plans.allPlans().map((plan) => {
+    const { portions, done, count } = planStatus(plan);
+    const t = plans.todayIndex(plan);
+    const pct = Math.round((count / portions.length) * 100);
+    const card = h(
+      "a",
+      { class: "plan-card", href: `#/plans/${plan.id}` },
+      h("b", {}, plan.name),
+      h("small", {}, `${GOAL_VERB[plan.goal]} · ${formatRange(plan.from, plan.to)} · ${portions.length} days`),
+      progressBar(pct),
+    );
+    let next: string;
+    if (count === portions.length) next = "Complete, alhamdulillah";
+    else if (t < 0) next = `Starts ${formatDate(plans.parseDate(plan.start))}`;
+    else {
+      const behind = done.slice(0, Math.min(t, portions.length)).filter((d) => !d.complete).length;
+      const today = portions[Math.min(t, portions.length - 1)];
+      next = t < portions.length ? `Today: ${formatRange(today.from, today.to)}` : "Schedule finished";
+      if (behind) next += ` · ${behind} day${behind > 1 ? "s" : ""} behind`;
+    }
+    card.append(h("small", { class: "progress-line" }, `${count}/${portions.length} done · ${next}`));
+    return card;
+  });
+
+  const presets = h(
+    "div",
+    { class: "presets" },
+    ...PRESETS.map((p) => {
+      const b = h("button", { class: "preset" }, h("b", {}, p.label), h("small", {}, p.desc));
+      b.addEventListener("click", () => {
+        draft = { ...newDraft(), ...p.draft };
+        location.hash = "#/plans/new";
+      });
+      return b;
+    }),
+  );
+
+  const add = h("a", { class: "button primary", href: "#/plans/new" }, "Custom plan");
+  add.addEventListener("click", () => (draft = newDraft()));
+
+  $app.replaceChildren(
+    h("header", { class: "top" }, h("h1", {}, "Tilawat"), h("span", { class: "sub" }, "Offline Quran")),
+    tabs("plans"),
+    h("h2", { class: "section" }, "Daily recitation"),
+    renderTracker(),
+    ...(list.length ? [h("h2", { class: "section" }, "Your plans"), h("div", { class: "plan-list" }, ...list)] : []),
+    h("h2", { class: "section" }, "Start a plan"),
+    presets,
+    add,
+  );
+  window.scrollTo(0, 0);
+}
+
+// Builder ------------------------------------------------------------------
+type Unit = "days" | "weeks" | "months" | "years";
+interface Draft {
+  goal: plans.PlanGoal;
+  rangeBy: "juz" | "surah";
+  juzFrom: number;
+  juzTo: number;
+  from: plans.AyahRef;
+  to: plans.AyahRef;
+  paceBy: "duration" | "ayahs";
+  n: number;
+  unit: Unit;
+  perDay: number;
+  start: string;
+  name: string;
+}
+
+function newDraft(): Draft {
+  return {
+    goal: "read",
+    rangeBy: "juz",
+    juzFrom: 1,
+    juzTo: 30,
+    from: { surah: 1, ayah: 1 },
+    to: { surah: 114, ayah: 6 },
+    paceBy: "duration",
+    n: 30,
+    unit: "days",
+    perDay: 5,
+    start: plans.toYmd(new Date()),
+    name: "",
+  };
+}
+let draft: Draft = newDraft();
+
+const PRESETS: { label: string; desc: string; draft: Partial<Draft> }[] = [
+  { label: "Qur'an in a month", desc: "One juz a day", draft: { goal: "read", n: 30, unit: "days" } },
+  { label: "Qur'an in a year", desc: "An even amount of reading each day", draft: { goal: "read", n: 1, unit: "years" } },
+  {
+    label: "Memorise Juz 'Amma",
+    desc: "5 new ayat a day",
+    draft: { goal: "memorise", juzFrom: 30, juzTo: 30, paceBy: "ayahs", perDay: 5 },
+  },
+];
+
+function draftRange(d: Draft): { from: plans.AyahRef; to: plans.AyahRef } {
+  if (d.rangeBy === "juz") return plans.juzRange(quran, Math.min(d.juzFrom, d.juzTo), Math.max(d.juzFrom, d.juzTo));
+  const clamp = (r: plans.AyahRef) => ({ surah: r.surah, ayah: Math.min(Math.max(1, r.ayah || 1), quran.surahs[r.surah - 1].totalVerses) });
+  return { from: clamp(d.from), to: clamp(d.to) };
+}
+
+function draftPlan(d: Draft) {
+  const { from, to } = draftRange(d);
+  const start = d.start || plans.toYmd(new Date());
+  const pace: plans.Pace =
+    d.paceBy === "ayahs"
+      ? { kind: "ayahs", perDay: Math.max(1, d.perDay || 1) }
+      : { kind: "days", days: Math.max(1, plans.durationDays(plans.parseDate(start), Math.max(1, d.n || 1), d.unit)) };
+  return { goal: d.goal, from, to, pace, start };
+}
+
+function segmented<T extends string>(value: T, options: [T, string][], onPick: (v: T) => void): HTMLElement {
+  return h(
+    "div",
+    { class: "segmented", role: "group" },
+    ...options.map(([v, label]) => {
+      const b = h("button", { type: "button", class: v === value ? "on" : "", "aria-pressed": String(v === value) }, label);
+      b.addEventListener("click", () => onPick(v));
+      return b;
+    }),
+  );
+}
+
+function select(value: string | number, options: [string | number, string][], onChange: (v: string) => void): HTMLSelectElement {
+  const el = h("select", {}, ...options.map(([v, label]) => h("option", { value: String(v) }, label)));
+  el.value = String(value);
+  el.addEventListener("change", () => onChange(el.value));
+  return el;
+}
+
+function numberInput(value: number, min: number, max: number, onInput: (v: number) => void): HTMLInputElement {
+  const el = h("input", { type: "number", inputmode: "numeric", min: String(min), max: String(max), value: String(value) });
+  el.addEventListener("input", () => onInput(Number(el.value)));
+  return el;
+}
+
+const field = (label: string, ...control: Node[]) => h("label", { class: "field" }, h("span", {}, label), ...control);
+
+function renderPlanNew(): void {
+  const d = draft;
+  const rerender = () => renderPlanNew();
+  const summary = h("p", { class: "plan-summary" });
+  const updateSummary = () => {
+    const p = draftPlan(d);
+    const portions = plans.schedule(quran, p);
+    const total = portions.reduce((n, x) => n + x.ayahs, 0);
+    const end = portions[portions.length - 1].date;
+    const perDay = Math.round(total / portions.length);
+    summary.textContent =
+      `${formatRange(p.from, p.to)} · ${total.toLocaleString()} ayat over ${portions.length} day${portions.length > 1 ? "s" : ""}` +
+      ` · about ${perDay} a day · ends ${end.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}`;
+  };
+
+  const surahOptions: [number, string][] = quran.surahs.map((s) => [s.id, `${s.id}. ${s.transliteration}`]);
+  const juzOptions: [number, string][] = Array.from({ length: 30 }, (_, i) => [i + 1, `Juz ${i + 1}`]);
+  const ayahPicker = (r: plans.AyahRef) =>
+    h(
+      "div",
+      { class: "row" },
+      select(r.surah, surahOptions, (v) => {
+        r.surah = Number(v);
+        r.ayah = r === d.to ? quran.surahs[r.surah - 1].totalVerses : 1;
+        rerender();
+      }),
+      numberInput(r.ayah, 1, quran.surahs[r.surah - 1].totalVerses, (v) => {
+        r.ayah = v;
+        updateSummary();
+      }),
+    );
+
+  const range =
+    d.rangeBy === "juz"
+      ? h(
+          "div",
+          { class: "row" },
+          field("From", select(d.juzFrom, juzOptions, (v) => ((d.juzFrom = Number(v)), rerender()))),
+          field("To", select(d.juzTo, juzOptions, (v) => ((d.juzTo = Number(v)), rerender()))),
+        )
+      : h("div", {}, field("From surah · ayah", ayahPicker(d.from)), field("To surah · ayah", ayahPicker(d.to)));
+
+  const pace =
+    d.paceBy === "duration"
+      ? h(
+          "div",
+          { class: "row" },
+          numberInput(d.n, 1, 3650, (v) => ((d.n = v), updateSummary())),
+          select(d.unit, [["days", "days"], ["weeks", "weeks"], ["months", "months"], ["years", "years"]], (v) => {
+            d.unit = v as Unit;
+            updateSummary();
+          }),
+        )
+      : h("div", { class: "row" }, numberInput(d.perDay, 1, 6236, (v) => ((d.perDay = v), updateSummary())), h("span", { class: "unit" }, "ayat a day"));
+
+  const name = h("input", { type: "text", placeholder: "Name (optional)", value: d.name });
+  name.addEventListener("input", () => (d.name = name.value));
+  const start = h("input", { type: "date", value: d.start });
+  start.addEventListener("change", () => ((d.start = start.value), updateSummary()));
+
+  const create = h("button", { class: "button primary", type: "submit" }, "Create plan");
+  const form = h(
+    "form",
+    { class: "plan-form" },
+    field("Goal", segmented(d.goal, [["read", "Read"], ["memorise", "Memorise"]], (v) => ((d.goal = v), rerender()))),
+    field("Range", segmented(d.rangeBy, [["juz", "By juz"], ["surah", "By surah & ayah"]], (v) => ((d.rangeBy = v), rerender()))),
+    range,
+    field("Pace", segmented(d.paceBy, [["duration", "Finish in"], ["ayahs", "Ayat per day"]], (v) => ((d.paceBy = v), rerender()))),
+    pace,
+    field("Start", start),
+    field("Name", name),
+    summary,
+    create,
+  );
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const p = draftPlan(d);
+    const plan = plans.addPlan({ ...p, name: d.name.trim() || `${GOAL_VERB[p.goal]} ${formatRange(p.from, p.to)}` });
+    draft = newDraft();
+    refreshReminders();
+    location.hash = `#/plans/${plan.id}`;
+  });
+
+  const scrollY = window.scrollY;
+  $app.replaceChildren(
+    h(
+      "header",
+      { class: "top reader-top" },
+      h("a", { class: "icon", href: "#/plans", "aria-label": "Study plans" }, "‹"),
+      h("div", { class: "title" }, h("b", {}, "New study plan"), h("small", {}, "Choose what to cover and how fast")),
+    ),
+    form,
+  );
+  updateSummary();
+  window.scrollTo(0, scrollY);
+}
+
+// Schedule -----------------------------------------------------------------
+function renderPlan(id: string): void {
+  const plan = plans.getPlan(id);
+  if (!plan) {
+    location.hash = "#/plans";
+    return;
+  }
+  const { portions, done, count } = planStatus(plan);
+  const t = plans.todayIndex(plan);
+
+  const del = h("button", { class: "icon", "aria-label": "Delete plan" }, "🗑");
+  del.addEventListener("click", () => {
+    if (confirm(`Delete "${plan.name}"?`)) {
+      plans.deletePlan(plan.id);
+      refreshReminders();
+      location.hash = "#/plans";
+    }
+  });
+
+  const rows = portions.map((p, i) => {
+    const st = done[i];
+    const check = h("input", { type: "checkbox", "aria-label": `Day ${i + 1} done` });
+    check.checked = st.complete;
+    // Fully recited days are done automatically; the box only adds manual ticks.
+    check.disabled = st.complete && !st.manual;
+    check.addEventListener("change", () => {
+      plans.setDone(plan, p.day, check.checked);
+      refreshReminders();
+      renderPlan(id);
+    });
+    const label = [`Day ${i + 1}`, formatDate(p.date), p.juzLabel].filter(Boolean).join(" · ");
+    const detail = [`${p.ayahs} ayat`];
+    if (st.heard && !st.complete) detail.push(`${st.heard}/${p.ayahs} recited`);
+    if (st.complete && !st.manual) detail.push("recited");
+    const body = h(
+      "a",
+      { href: `#/surah/${p.from.surah}/${p.from.ayah}`, class: "day-body" },
+      h("small", {}, label),
+      h("b", {}, formatRange(p.from, p.to)),
+      h("small", {}, detail.join(" · ")),
+    );
+    if (plan.goal === "memorise" && i > 0) {
+      const prev = portions[i - 1];
+      body.append(h("small", { class: "revise" }, `Then revise: ${formatRange(prev.from, prev.to)}`));
+    }
+    return h(
+      "li",
+      { class: `day${i === t ? " today" : ""}${st.complete ? " complete" : ""}${i < t && !st.complete ? " late" : ""}`, id: `day-${i}` },
+      check,
+      body,
+    );
+  });
+
+  const pct = Math.round((count / portions.length) * 100);
+  $app.replaceChildren(
+    h(
+      "header",
+      { class: "top reader-top" },
+      h("a", { class: "icon", href: "#/plans", "aria-label": "Study plans" }, "‹"),
+      h("div", { class: "title" }, h("b", {}, plan.name), h("small", {}, `${GOAL_VERB[plan.goal]} · ${portions.length} days`)),
+      del,
+    ),
+    h(
+      "div",
+      { class: "progress-panel" },
+      h("b", {}, `${count} of ${portions.length} days done`),
+      progressBar(pct),
+      h("p", { class: "fine" }, "Days tick themselves off once every ayah in them has been recited with the mic. Tap a day to open it in the reader."),
+    ),
+    h("ol", { class: "days" }, ...rows),
+  );
+  const focus = Math.max(0, Math.min(t, portions.length - 1));
+  if (focus > 0) document.getElementById(`day-${focus}`)?.scrollIntoView({ block: "center" });
+  else window.scrollTo(0, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Daily tracker and reminders
+// ---------------------------------------------------------------------------
+const TRACKER_WEEKS = 20;
+
+/** The first unfinished plan with a portion scheduled on `date`. */
+function planPortionOn(date: Date): { plan: plans.Plan; portion: plans.Portion } | null {
+  for (const plan of plans.allPlans()) {
+    const portions = plans.schedule(quran, plan);
+    const i = plans.todayIndex(plan, date);
+    if (i < 0 || i >= portions.length || plan.done.includes(i)) continue;
+    return { plan, portion: portions[i] };
+  }
+  return null;
+}
+
+function reminderMessage(date: Date, offset: number): reminders.ReminderMessage {
+  const st = progress.streak();
+  // Tomorrow's streak only holds if today was done; further ahead, keep it simple.
+  const streakNow = offset === 0 ? st.current : offset === 1 && st.today ? st.current : 0;
+  const title = streakNow > 0 ? `Keep your ${streakNow}-day streak going` : "Time for your daily recitation";
+  const due = planPortionOn(date);
+  if (due) {
+    return {
+      title,
+      body: `Day ${due.portion.day + 1} of ${due.plan.name}: ${formatRange(due.portion.from, due.portion.to)}`,
+      hash: `#/surah/${due.portion.from.surah}/${due.portion.from.ayah}`,
+    };
+  }
+  const last = settings.lastRead;
+  return {
+    title,
+    body: last
+      ? `Pick up at ${surahName(last.surah)}, ayah ${last.ayah}. Even a few ayat count.`
+      : "Open Tilawat and recite a few ayat.",
+    hash: last ? `#/surah/${last.surah}/${last.ayah}` : "#/",
+  };
+}
+
+let reminderQueue = Promise.resolve();
+/** Rebuild the reminder schedule (after a recitation, a plan change or a settings change). */
+function refreshReminders(): void {
+  reminderQueue = reminderQueue
+    .then(() => reminders.refresh(settings.reminder, progress.streak().today, reminderMessage))
+    .catch((err) => console.warn("reminders: refresh failed", err));
+}
+
+function renderTracker(): HTMLElement {
+  const st = progress.streak();
+  const today = new Date();
+  // Columns are weeks (Monday first), ending with the current week.
+  const mondayOffset = (today.getDay() + 6) % 7;
+  const first = new Date(today.getFullYear(), today.getMonth(), today.getDate() - mondayOffset - (TRACKER_WEEKS - 1) * 7);
+  const cells: HTMLElement[] = [];
+  for (let n = 0; n < TRACKER_WEEKS * 7; n++) {
+    const d = new Date(first.getFullYear(), first.getMonth(), first.getDate() + n);
+    if (d > today) {
+      cells.push(h("span", { class: "cell future" }));
+      continue;
+    }
+    const ayat = progress.ayahsOn(d);
+    const level = ayat === 0 ? 0 : ayat < 10 ? 1 : ayat < 50 ? 2 : 3;
+    const label = `${d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })}: ${ayat ? `${ayat} ayat recited` : "no recitation"}`;
+    cells.push(h("span", { class: `cell l${level}${n === TRACKER_WEEKS * 7 - 7 + mondayOffset ? " now" : ""}`, title: label, "aria-label": label }));
+  }
+
+  const stat = (value: number, label: string) => h("div", { class: "stat" }, h("b", {}, String(value)), h("small", {}, label));
+  const card = h(
+    "section",
+    { class: "tracker" },
+    h(
+      "div",
+      { class: "stats" },
+      stat(st.current, "day streak"),
+      stat(st.best, "best streak"),
+      stat(st.daysThisYear, "days this year"),
+    ),
+    h("div", { class: "heatmap", role: "img", "aria-label": `Recitation calendar for the last ${TRACKER_WEEKS} weeks` }, ...cells),
+    h(
+      "p",
+      { class: "fine" },
+      st.today ? "You've recited today. Well done." : "A day counts once you recite with the mic and Tilawat follows along.",
+    ),
+    renderReminderRow(),
+  );
+  return card;
+}
+
+function renderReminderRow(): HTMLElement {
+  if (!reminders.supported) {
+    return h("p", { class: "fine" }, "Daily reminders are available in the Android and iOS apps.");
+  }
+  const toggle = h("input", { type: "checkbox", role: "switch", "aria-label": "Daily reminder" });
+  toggle.checked = settings.reminder.enabled;
+  const time = h("input", { type: "time", value: settings.reminder.time, "aria-label": "Reminder time" });
+  time.disabled = !settings.reminder.enabled;
+  const note = h("small", {});
+  const sync = () => {
+    note.textContent = settings.reminder.enabled ? "Skipped on days you've already recited" : "";
+    time.disabled = !settings.reminder.enabled;
+  };
+  toggle.addEventListener("change", async () => {
+    if (toggle.checked && !(await reminders.requestPermission())) {
+      toggle.checked = false;
+      setStatus("Allow notifications for Tilawat in system settings to get reminders", "error");
+      return;
+    }
+    settings.reminder.enabled = toggle.checked;
+    saveSettings();
+    sync();
+    refreshReminders();
+  });
+  time.addEventListener("change", () => {
+    if (!time.value) return;
+    settings.reminder.time = time.value;
+    saveSettings();
+    refreshReminders();
+  });
+  sync();
+  return h(
+    "div",
+    { class: "reminder-row" },
+    h("label", { class: "switch" }, toggle, h("span", {}, h("b", {}, "Daily reminder"), note)),
+    time,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -407,12 +916,15 @@ const recognizer = new Recognizer((e: RecognizerEvent) => {
     case "listening":
       showBlind(e.active && settings.mode === "review");
       $mic.classList.toggle("on", e.active);
+      $wave.hidden = !e.active;
+      document.body.classList.toggle("listening", e.active);
+      if (e.active && recognizer.analyser) waveform.start(recognizer.analyser);
+      else waveform.stop();
       $mic.setAttribute("aria-pressed", String(e.active));
       setStatus(e.active ? "Listening… start reciting" : "", e.active ? "live" : "idle");
       break;
     case "level":
-      $mic.style.setProperty("--level", String(Math.min(1, e.rms * 12)));
-      break;
+      break; // the waveform reads the mic directly, every frame
     case "verse_match": {
       const s = quran.surahs[e.surah - 1];
       setStatus(`${s.transliteration} ${e.surah}:${e.ayah}`, "live");
@@ -435,6 +947,7 @@ const recognizer = new Recognizer((e: RecognizerEvent) => {
       break;
     case "stopped":
       progress.endSession();
+      refreshReminders();
       if (route.name === "surah") paintProgress(quran.surahs[route.id - 1]);
       if (settings.mode !== "follow") showReview();
       break;
@@ -712,7 +1225,7 @@ function showReview(): void {
 // Boot
 // ---------------------------------------------------------------------------
 setStatus("Loading Quran…", "busy");
-Promise.all([loadQuran(), progress.loadProgress()])
+Promise.all([loadQuran(), progress.loadProgress(), plans.loadPlans()])
   .then(async ([q]) => {
     quran = q;
     await applyScript(q, settings.script).catch(() => {
@@ -720,6 +1233,8 @@ Promise.all([loadQuran(), progress.loadProgress()])
     });
     setStatus("");
     window.addEventListener("hashchange", render);
+    reminders.onTap((hash) => (location.hash = hash));
+    refreshReminders();
     renderModeButton();
     render();
   })

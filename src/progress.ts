@@ -33,6 +33,8 @@ interface Store {
   sessions: Session[];
   /** Last ayah on screen per surah, and when. */
   views: Record<number, { ayah: number; at: number }>;
+  /** Ayat recited with the mic per local day ("YYYY-MM-DD"). Outlives the session cap. */
+  days?: Record<string, number>;
 }
 
 /** Latest known state of an ayah, from the most recent session that touched it. */
@@ -62,6 +64,7 @@ export async function loadProgress(): Promise<void> {
     if (value) {
       const parsed = JSON.parse(value) as Store;
       if (parsed.version === 1) store = parsed;
+      store.days ??= backfillDays(store.sessions);
     }
   } catch (err) {
     console.warn("progress: could not load, starting fresh", err);
@@ -90,7 +93,12 @@ export function startSession(mode: SessionMode): void {
 export function recordAyah(surah: number, ayah: number): void {
   if (!current) return;
   const key = `${surah}:${ayah}`;
-  if (!current.ayahs.includes(key)) current.ayahs.push(key);
+  if (!current.ayahs.includes(key)) {
+    current.ayahs.push(key);
+    const days = (store.days ??= {});
+    const today = ymd(new Date());
+    days[today] = (days[today] ?? 0) + 1;
+  }
   persist();
 }
 
@@ -173,4 +181,61 @@ export function relativeTime(at: number): string {
   const days = Math.round(hours / 24);
   if (days < 30) return `${days} day${days > 1 ? "s" : ""} ago`;
   return new Date(at).toLocaleDateString();
+}
+
+/** "surah:ayah" keys recited in any session that started at or after `since`. */
+export function recitedSince(since: number): Set<string> {
+  const out = new Set<string>();
+  for (const s of store.sessions) if (s.startedAt >= since) for (const k of s.ayahs) out.add(k);
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Daily tracker
+// ---------------------------------------------------------------------------
+export function ymd(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function backfillDays(sessions: Session[]): Record<string, number> {
+  const days: Record<string, number> = {};
+  for (const s of sessions) {
+    if (!s.ayahs.length) continue;
+    const k = ymd(new Date(s.startedAt));
+    days[k] = (days[k] ?? 0) + s.ayahs.length;
+  }
+  return days;
+}
+
+/** Ayat recited with the mic on the given day (0 if none). */
+export const ayahsOn = (d: Date): number => store.days?.[ymd(d)] ?? 0;
+
+export interface Streak {
+  /** Consecutive days up to today, or up to yesterday while today is still open. */
+  current: number;
+  best: number;
+  /** Days with any recitation in the last 365. */
+  daysThisYear: number;
+  today: boolean;
+}
+
+export function streak(now = new Date()): Streak {
+  const days = store.days ?? {};
+  const day = (n: number) => new Date(now.getFullYear(), now.getMonth(), now.getDate() - n);
+  const today = !!days[ymd(now)];
+  let current = 0;
+  for (let n = today ? 0 : 1; days[ymd(day(n))]; n++) current++;
+  let best = 0;
+  let run = 0;
+  let prev: number | null = null;
+  for (const k of Object.keys(days).filter((k) => days[k] > 0).sort()) {
+    const [y, m, d] = k.split("-").map(Number);
+    const t = new Date(y, m - 1, d).getTime();
+    run = prev !== null && Math.round((t - prev) / 86400000) === 1 ? run + 1 : 1;
+    best = Math.max(best, run);
+    prev = t;
+  }
+  let daysThisYear = 0;
+  for (let n = 0; n < 365; n++) if (days[ymd(day(n))]) daysThisYear++;
+  return { current, best: Math.max(best, current), daysThisYear, today };
 }

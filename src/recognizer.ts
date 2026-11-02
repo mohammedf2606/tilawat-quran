@@ -13,6 +13,8 @@ export class Recognizer {
   private ctx: AudioContext | null = null;
   private stream: MediaStream | null = null;
   active = false;
+  /** The live mic signal for visualising voice activity; null while stopped. */
+  analyser: AnalyserNode | null = null;
 
   constructor(private onEvent: (e: RecognizerEvent) => void) {}
 
@@ -72,6 +74,15 @@ export class Recognizer {
       this.send({ type: "audio", samples }, [samples.buffer]);
     };
     source.connect(node);
+    // An analyser taps the mic for the on-screen waveform. Routed to the output
+    // through a muted gain so every browser keeps pulling audio through it.
+    const analyser = this.ctx.createAnalyser();
+    analyser.fftSize = 1024;
+    const mute = this.ctx.createGain();
+    mute.gain.value = 0;
+    source.connect(analyser);
+    analyser.connect(mute).connect(this.ctx.destination);
+    this.analyser = analyser;
     this.active = true;
     this.onEvent({ type: "listening", active: true });
   }
@@ -84,6 +95,7 @@ export class Recognizer {
   async stop(): Promise<void> {
     if (!this.active) return;
     this.active = false;
+    this.analyser = null;
     this.stream?.getTracks().forEach((t) => t.stop());
     await this.ctx?.close();
     this.stream = null;

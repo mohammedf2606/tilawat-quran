@@ -8,6 +8,12 @@ const config: CapacitorConfig = {
     // Assets are bundled; nothing should ever be fetched from the network.
     allowMixedContent: false,
   },
+  plugins: {
+    LocalNotifications: {
+      smallIcon: "ic_stat_tilawat",
+      iconColor: "#0f6b5c",
+    },
+  },
 };
 
 export default config;
